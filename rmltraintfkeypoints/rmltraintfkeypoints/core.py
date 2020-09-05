@@ -97,6 +97,8 @@ def train(ctx, train: TrainInput, comet):
 @click.option('--render_poses', is_flag=True)
 @click.pass_context
 def eval(ctx, model_path, dataset_name, output_path, pnp_focal_length, plot=False, render_poses=False):
+    RAVEN_VAR = os.environ['RAVEN_VAR']
+    print('ENV = ', RAVEN_VAR)
     # ensure dataset exists and get its path
     if os.path.exists(dataset_cache.path / dataset_name):
         dataset = Dataset(dataset_name, {}, dataset_cache.path / dataset_name)
@@ -108,7 +110,7 @@ def eval(ctx, model_path, dataset_name, output_path, pnp_focal_length, plot=Fals
             raise_parameter_error(dataset_name, 'dataset name')
 
     if os.path.exists(output_path):
-        if user_confirms('Artifact storage location contains old data. Overwrite?'):
+        if True or user_confirms('Artifact storage location contains old data. Overwrite?'):
             shutil.rmtree(output_path)
         else:
             return ctx.exit()
@@ -136,6 +138,8 @@ def eval(ctx, model_path, dataset_name, output_path, pnp_focal_length, plot=Fals
     test_data = data_utils.dataset_from_directory(dataset.path / "test", cropsize, nb_keypoints)
     test_data = test_data.batch(32)
     img_cnt = 0
+    from collections import defaultdict
+    examples = []
     for image_batch, truth_batch in tqdm.tqdm(test_data):
         kps_batch = model.predict(image_batch)
         if model.name == 'mobilepose':
@@ -152,7 +156,16 @@ def eval(ctx, model_path, dataset_name, output_path, pnp_focal_length, plot=Fals
             / truth_batch['bbox_size'][:, None, None] * cropsize + (cropsize // 2)
         for i, (kps, kps_true) in enumerate(zip(kps_batch, kps_true_batch.numpy())):
             image = ((image_batch[i].numpy() + 1) / 2 * 255).astype(np.uint8)
-            r_vec, t_vec, cam_matrix, coefs = utils.calculate_pose_vectors(
+            # print(kps, nb_keypoints, kps.shape)
+            # 11 (2156, 2)
+            a = kps.reshape((11, 2, 14 * 14))
+            b = np.mean(a, axis=2).reshape((11, 2, 1))
+            metrics = {}
+            metrics['kps_grid_diff_mean'] = (np.mean(np.abs(a - b)))
+            metrics['kps_grid_diff_max'] = (np.max(np.abs(a - b)))
+            metrics['kps_grid_diff_min'] = (np.min(np.abs(a - b)))
+            metrics['kps_grid_diff_std'] = (np.std(np.abs(a - b)))
+            r_vec, t_vec, cam_matrix, coefs, inliers = utils.calculate_pose_vectors(
                 ref_points, kps,
                 [pnp_focal_length, pnp_focal_length], image.shape[:2],
                 extra_crop_params={
@@ -162,7 +175,9 @@ def eval(ctx, model_path, dataset_name, output_path, pnp_focal_length, plot=Fals
                 },
                 ransac=True,
             )
-            errs_pose.append(utils.geodesic_error(r_vec, truth_batch['pose'][i]))
+            err = utils.geodesic_error(r_vec, truth_batch['pose'][i])
+            examples.append((a, inliers, err))
+            errs_pose.append(err)
             errs_position.append(
                 np.linalg.norm(truth_batch['position'][i] - np.squeeze(t_vec)) / np.linalg.norm(truth_batch['position'][i])
             )
@@ -183,12 +198,29 @@ def eval(ctx, model_path, dataset_name, output_path, pnp_focal_length, plot=Fals
                         cv2.circle(image, tuple(kp[::-1]), 3, tuple(map(int, color)), -1)
                 cv2.imwrite(f'{output_path}/pose-render-{img_cnt:04d}.png', image)
             img_cnt += 1
+            if render_poses:
+                break
+        if render_poses:
+            break
+
+
 
     np.save(f'{output_path}/pose_errs.npy', np.array(errs_pose))
     np.save(f'{output_path}/position_errs.npy', np.array(errs_position))
     np.save(f'{output_path}/keypoint_errs.npy', np.array(errs_by_keypoint))
     _display_keypoint_stats(errs_by_keypoint)
     display_geodesic_stats('Model Preds', np.array(errs_pose), np.array(errs_position), plot=plot)
+
+    err_data = {
+        'position_err_mean': np.mean(errs_position),
+        'position_err_median': np.median(errs_position),
+        'position_err_max': np.max(errs_position),
+        'pose_err_mean': np.degrees(np.mean(errs_pose)),
+        'pose_err_median': np.degrees(np.median(errs_pose)),
+        'pose_err_max': np.degrees(np.max(errs_pose)),
+    }
+
+    np.save('err-data-{}.npy'.format(RAVEN_VAR), examples)
 
 
 @tf_keypoints.command(help="Evaluate ground truth PnP.")

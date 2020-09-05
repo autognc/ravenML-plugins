@@ -41,13 +41,19 @@ def dataset_from_directory(dir_path, cropsize, nb_keypoints=None):
     def process(image_file, metadata):
         # load bounding box
         # TODO don't hardcode key, maybe
-        bbox = metadata['bboxes']['cygnus']
+        bbox = metadata['bboxes']['tango']
         xmin = bbox['xmin']
         xmax = bbox['xmax']
         ymin = bbox['ymin']
         ymax = bbox['ymax']
         centroid = tf.convert_to_tensor([(ymax + ymin) / 2, (xmax + xmin) / 2], dtype=tf.float32)
         bbox_size = tf.cast(tf.maximum(xmax - xmin, ymax - ymin), tf.float32) * 1.25
+
+        # TODO
+        # bbox_size *= 2
+        var = int(os.environ['RAVEN_VAR'])
+        centroid += tf.random.uniform((2,), -var, var)
+        # centroid += tf.constant([-200, -200], dtype=tf.float32)
 
         # load and crop image
         image_data = tf.io.read_file(image_file)
@@ -58,7 +64,7 @@ def dataset_from_directory(dir_path, cropsize, nb_keypoints=None):
             'bbox_size': tf.ensure_shape(bbox_size, []),
             'centroid': tf.ensure_shape(centroid, [2]),
             'imdims': imdims,
-            'position': tf.ensure_shape(metadata['translation'], [3])
+            'position': tf.ensure_shape(metadata['position'], [3])
         }
         if nb_keypoints:
             truth['keypoints'] = tf.cast(metadata['keypoints'][:nb_keypoints], tf.float32) * imdims

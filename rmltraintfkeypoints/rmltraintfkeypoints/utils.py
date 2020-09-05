@@ -57,7 +57,7 @@ def calculate_pose_vectors(ref_points, keypoints, focal_length, imdims, extra_cr
     if not ret:
         print('Pose solve failed')
         r_vec, t_vec = np.zeros([2, 3], dtype=np.float32)
-    return r_vec, t_vec, cam_matrix, dist_coeffs
+    return r_vec, t_vec, cam_matrix, dist_coeffs, inliers
 
 
 def to_rotation(r):
