@@ -64,7 +64,7 @@ def main(model_path, directory, keypoints, focal_length, num, output, render):
     ref_points = np.load(keypoints_path).reshape((-1, 3))[:nb_keypoints]
 
     data = utils.data.dataset_from_directory(
-        directory, cropsize, nb_keypoints=nb_keypoints
+        os.path.join(directory, "test"), cropsize, nb_keypoints=nb_keypoints
     )
     if num:
         data = data.take(num)

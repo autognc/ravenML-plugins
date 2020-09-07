@@ -61,7 +61,7 @@ def dataset_from_directory(dir_path, cropsize, nb_keypoints=None):
             "bbox_size": tf.ensure_shape(bbox_size, []),
             "centroid": tf.ensure_shape(centroid, [2]),
             "imdims": imdims,
-            "position": tf.ensure_shape(metadata["translation"], [3]),
+            "position": tf.ensure_shape(metadata["position"], [3]),
         }
         if nb_keypoints:
             truth["keypoints"] = (

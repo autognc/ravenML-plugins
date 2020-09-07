@@ -290,7 +290,6 @@ class KeypointsModel:
             model.compile(
                 optimizer=optimizer,
                 loss=self.get_mobilepose_loss(model.output_shape[-3:-1]),
-                metrics=[pose_error_callback.assign_metric],
             )
             try:
                 model.fit(

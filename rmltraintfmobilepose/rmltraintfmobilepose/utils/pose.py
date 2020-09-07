@@ -91,6 +91,7 @@ def to_rotation(r):
 
 def geodesic_error(rot_pred, rot_truth):
     rot_pred, rot_truth = to_rotation(rot_pred), to_rotation(rot_truth)
+    rot_pred = Rotation.from_euler('xyz', [np.pi, 0, 0]) * rot_pred
     return _quat_geodesic_error(rot_pred.as_quat(), rot_truth.as_quat())
 
 
