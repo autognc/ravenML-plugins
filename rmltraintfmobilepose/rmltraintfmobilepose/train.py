@@ -102,7 +102,7 @@ class KeypointsModel:
         self.data_dir = data_dir
         self.hp = hp
         self.nb_keypoints = hp["keypoints"]
-        self.keypoints_3d = keypoints_3d[: self.nb_keypoints]
+        # self.keypoints_3d = keypoints_3d[: self.nb_keypoints]
         self.crop_size = hp["crop_size"]
 
     def _get_dataset(self, split_name, train):
@@ -141,6 +141,9 @@ class KeypointsModel:
             centroid = tf.stack([(ymax + ymin) / 2, (xmax + xmin) / 2], axis=-1)
             bbox_size = tf.maximum(xmax - xmin, ymax - ymin) * 1.25
 
+            random_shift = tf.random.uniform((2,), -130, 130)
+            centroid += random_shift
+
             # random positioning
             if train:
                 bbox_size *= tf.random.uniform([], minval=1.0, maxval=1.5)
@@ -161,6 +164,11 @@ class KeypointsModel:
                 old_dims,
                 self.nb_keypoints,
             )
+
+            if tf.math.reduce_max(keypoints) > 1 or tf.math.reduce_min(keypoints) < -1:
+                occluded = True
+            else:
+                occluded = False
 
             # other augmentations
             if train:
@@ -204,6 +212,7 @@ class KeypointsModel:
                 width=width,
                 bbox_size=bbox_size,
                 centroid=centroid,
+                occluded=occluded,
             )
             return image, truth
 
@@ -247,9 +256,9 @@ class KeypointsModel:
         #     cv2.imshow("test.png", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
         #     cv2.waitKey(0)
 
-        pose_error_callback = PoseErrorCallback(
-            self.keypoints_3d, self.crop_size, self.hp["pnp_focal_length"], experiment
-        )
+        # pose_error_callback = PoseErrorCallback(
+        #     self.keypoints_3d, self.crop_size, self.hp["pnp_focal_length"], experiment
+        # )
         for i, phase in enumerate(self.hp["phases"]):
             phase_logdir = os.path.join(logdir, f"phase_{i}")
             model_path = os.path.join(phase_logdir, "model.h5")
@@ -373,7 +382,7 @@ class KeypointsModel:
         return tf.keras.models.Model(mobilenet.input, x, name="mobilepose")
 
     @staticmethod
-    def encode_label(*, keypoints, pose, height, width, bbox_size, centroid):
+    def encode_label(*, keypoints, pose, height, width, bbox_size, centroid, occluded):
         if len(keypoints.shape) == 3:
             keypoints = tf.reshape(keypoints, [tf.shape(keypoints)[0], -1])
             return tf.concat(
@@ -383,6 +392,7 @@ class KeypointsModel:
                     tf.reshape(tf.cast(width, tf.float32), [-1, 1]),
                     tf.reshape(tf.cast(bbox_size, tf.float32), [-1, 1]),
                     tf.reshape(tf.cast(centroid, tf.float32), [-1, 2]),
+                    tf.reshape(tf.cast(occluded, tf.float32), [-1, 1]),
                     tf.cast(keypoints, tf.float32),
                 ),
                 axis=-1,
@@ -396,6 +406,7 @@ class KeypointsModel:
                     tf.reshape(tf.cast(width, tf.float32), [1]),
                     tf.reshape(tf.cast(bbox_size, tf.float32), [1]),
                     tf.reshape(tf.cast(centroid, tf.float32), [2]),
+                    tf.reshape(tf.cast(occluded, tf.float32), [1]),
                     tf.cast(keypoints, tf.float32),
                 ),
                 axis=-1,
@@ -411,8 +422,9 @@ class KeypointsModel:
             "width": tf.squeeze(label[:, 5]),
             "bbox_size": tf.squeeze(label[:, 6]),
             "centroid": tf.squeeze(label[:, 7:9]),
+            "occluded": tf.squeeze(label[:, 9]),
             "keypoints": tf.squeeze(
-                tf.reshape(label[:, 9:], [tf.shape(label)[0], -1, 2])
+                tf.reshape(label[:, 10:], [tf.shape(label)[0], -1, 2])
             ),
         }
 
