@@ -141,8 +141,8 @@ class KeypointsModel:
             centroid = tf.stack([(ymax + ymin) / 2, (xmax + xmin) / 2], axis=-1)
             bbox_size = tf.maximum(xmax - xmin, ymax - ymin) * 1.25
 
-            random_shift = tf.random.uniform((2,), -130, 130)
-            centroid += random_shift
+            # random_shift = tf.random.uniform((2,), -120, 120)
+            # centroid += random_shift
 
             # random positioning
             if train:

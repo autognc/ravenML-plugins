@@ -52,6 +52,9 @@ def dataset_from_directory(dir_path, cropsize, nb_keypoints=None):
         )
         bbox_size = tf.cast(tf.maximum(xmax - xmin, ymax - ymin), tf.float32) * 1.25
 
+        random_shift = tf.random.uniform((2,), -80, 80)
+        centroid += random_shift
+
         # load and crop image
         image_data = tf.io.read_file(image_file)
         imdims, image = preprocess_image(image_data, centroid, bbox_size, cropsize)

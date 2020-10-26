@@ -61,7 +61,8 @@ def main(model_path, directory, keypoints, focal_length, num, output, render):
     keypoints_path = (
         keypoints if keypoints else os.path.join(directory, "keypoints.npy")
     )
-    ref_points = np.load(keypoints_path).reshape((-1, 3))[:nb_keypoints]
+    all_ref_points = np.load(keypoints_path).reshape((-1, 3))
+    ref_points = all_ref_points[:nb_keypoints]
 
     data = utils.data.dataset_from_directory(
         os.path.join(directory, "test"), cropsize, nb_keypoints=nb_keypoints
@@ -75,6 +76,7 @@ def main(model_path, directory, keypoints, focal_length, num, output, render):
     errs_position = []
     errs_by_keypoint = []
     img_cnt = 0
+    temp_data = []
     for image_batch, truth_batch in tqdm.tqdm(data):
         truth_batch = [
             dict(zip(truth_batch.keys(), t)) for t in zip(*truth_batch.values())
@@ -82,8 +84,8 @@ def main(model_path, directory, keypoints, focal_length, num, output, render):
         kps_batch = model.predict(image_batch)
         kps_batch = utils.model.decode_displacement_field(kps_batch)
         kps_batch = kps_batch * (cropsize // 2) + (cropsize // 2)
-        for image, kps, truth in zip(image_batch, kps_batch.numpy(), truth_batch):
-            image = tf.cast(image * 127.5 + 127.5, tf.uint8).numpy()
+        for encoded_image, kps, truth in zip(image_batch, kps_batch.numpy(), truth_batch):
+            image = tf.cast(encoded_image * 127.5 + 127.5, tf.uint8).numpy()
             kps_true = (truth["keypoints"] - truth["centroid"]) / truth[
                 "bbox_size"
             ] * cropsize + (cropsize // 2)
@@ -92,16 +94,32 @@ def main(model_path, directory, keypoints, focal_length, num, output, render):
                 kps,
                 [focal_length, focal_length],
                 image.shape[:2],
-                extra_crop_params={
-                    "centroid": truth["centroid"],
-                    "bbox_size": truth["bbox_size"],
-                    "imdims": truth["imdims"],
-                },
+                # extra_crop_params={
+                #     "centroid": truth["centroid"],
+                #     "bbox_size": truth["bbox_size"],
+                #     "imdims": truth["imdims"],
+                # },
                 ransac=True,
                 reduce_mean=False,
             )
-            errs_pose.append(utils.pose.geodesic_error(r_vec, truth["pose"]))
-            errs_position.append(utils.pose.position_error(t_vec, truth["position"])[1])
+            r_vec_true, t_vec_true = utils.pose.solve_pose(
+                ref_points,
+                kps_true.numpy(),
+                [focal_length, focal_length],
+                image.shape[:2],
+                # extra_crop_params={
+                #     "centroid": truth["centroid"],
+                #     "bbox_size": truth["bbox_size"],
+                #     "imdims": truth["imdims"],
+                # },
+                ransac=True,
+                reduce_mean=False,
+            )
+            err_pose = utils.pose.geodesic_error(r_vec, truth["pose"])
+            err_position = utils.pose.position_error(t_vec, truth["position"])[1]
+            temp_data.append((encoded_image.numpy(), err_pose, err_position, all_ref_points, ref_points, kps, kps_true.numpy(), focal_length, r_vec, t_vec, r_vec_true, t_vec_true))
+            errs_pose.append(err_pose)
+            errs_position.append(err_position)
             # TODO doesn't use all guesses
             errs_by_keypoint.append(
                 [np.linalg.norm(kp_true - kp) for kp, kp_true in zip(kps, kps_true)]
@@ -144,6 +162,8 @@ def main(model_path, directory, keypoints, focal_length, num, output, render):
     # np.save(f"{output_path}/keypoint_errs.npy", np.array(errs_by_keypoint))
     utils.pose.display_keypoint_stats(errs_by_keypoint)
     utils.pose.display_geodesic_stats(np.array(errs_pose), np.array(errs_position))
+
+    np.save('error_data.npy', temp_data)
 
     if output:
         with open(output, "w") as f:
