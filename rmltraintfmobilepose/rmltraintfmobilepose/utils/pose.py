@@ -12,6 +12,7 @@ def solve_pose(
     extra_crop_params=None,
     ransac=True,
     reduce_mean=False,
+    return_inliers=False,
 ):
     """
     Calculates pose vectors using CV2's solvePNP.
@@ -74,6 +75,8 @@ def solve_pose(
     if not ret:
         print("Pose solve failed")
         r_vec, t_vec = np.zeros([2, 3], dtype=np.float32)
+    if ransac and return_inliers:
+        return r_vec, t_vec, len(inliers)
     return r_vec, t_vec
 
 
@@ -89,10 +92,16 @@ def to_rotation(r):
     raise ValueError()
 
 
-def geodesic_error(rot_pred, rot_truth):
+def geodesic_error(rot_pred, rot_truth, flip=False):
     rot_pred, rot_truth = to_rotation(rot_pred), to_rotation(rot_truth)
-    rot_pred = Rotation.from_euler('xyz', [np.pi, 0, 0]) * rot_pred
-    return _quat_geodesic_error(rot_pred.as_quat(), rot_truth.as_quat())
+    # rot_pred = Rotation.from_euler("x", 180, degrees=True) * rot_pred
+    err = _quat_geodesic_error(rot_pred.as_quat(), rot_truth.as_quat())
+    if flip:
+        rot_pred_flip = rot_pred * Rotation.from_euler("z", 180, degrees=True)
+        return min(
+            err, _quat_geodesic_error(rot_pred_flip.as_quat(), rot_truth.as_quat()),
+        )
+    return err
 
 
 def _quat_geodesic_error(q1, q2):
@@ -136,6 +145,8 @@ def display_geodesic_stats(errs_pose, errs_position):
 
 
 def display_keypoint_stats(errs):
+    if len(errs) == 0:
+        return
     errs = np.array(errs)
     print(f"\n---- Error Stats Per Keypoint ----")
     print(f" ### | mean | median | max ")

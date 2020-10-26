@@ -66,7 +66,9 @@ def dataset_from_directory(dir_path, cropsize, nb_keypoints=None):
             "imdims": imdims,
             "position": tf.ensure_shape(metadata["position"], [3]),
         }
-        if nb_keypoints:
+        if "focal_length" in metadata:
+            truth["focal_length"] = tf.ensure_shape(metadata["focal_length"], [])
+        if nb_keypoints and "keypoints" in metadata:
             truth["keypoints"] = (
                 tf.cast(metadata["keypoints"][:nb_keypoints], tf.float32) * imdims
             )

@@ -8,8 +8,17 @@ import cv2
 
 
 class PoseErrorCallback(tf.keras.callbacks.Callback):
-    def __init__(self, ref_points, cropsize, focal_length, experiment=None):
+    def __init__(
+        self,
+        model,
+        ref_points,
+        cropsize,
+        focal_length,
+        real_image_dir=None,
+        experiment=None,
+    ):
         super().__init__()
+        self.model = model
         self.ref_points = ref_points
         self.crop_size = cropsize
         self.focal_length = focal_length
@@ -19,6 +28,12 @@ class PoseErrorCallback(tf.keras.callbacks.Callback):
         self.train_errors = []
         self.test_errors = []
         self.comet_step = 0
+
+        self.real_image_dataset = []
+        if real_image_dir:
+            self.real_image_dataset = utils.data.dataset_from_directory(
+                real_image_dir, cropsize, len(ref_points)
+            ).batch(32)
 
     def assign_metric(self, y_true, y_pred):
         self.targets.assign(y_true)
@@ -54,6 +69,53 @@ class PoseErrorCallback(tf.keras.callbacks.Callback):
 
     def on_epoch_begin(self, epoch, logs=None):
         self.train_errors = []
+
+    def on_epoch_end(self, epoch, logs=None):
+        errs_pose = []
+        errs_pose_flip = []
+        errs_position = []
+        for image_batch, truth_batch in self.real_image_dataset:
+            truth_batch = [
+                dict(zip(truth_batch.keys(), t)) for t in zip(*truth_batch.values())
+            ]
+            kps_batch = self.model.predict(image_batch)
+            kps_batch = utils.model.decode_displacement_field(kps_batch)
+            kps_batch = kps_batch * (self.cropsize // 2) + (self.cropsize // 2)
+            for image, kps, truth in zip(image_batch, kps_batch.numpy(), truth_batch):
+                image = tf.cast(image * 127.5 + 127.5, tf.uint8).numpy()
+                r_vec, t_vec = utils.pose.solve_pose(
+                    self.ref_points,
+                    kps,
+                    [truth["focal_length"], truth["focal_length"]],
+                    image.shape[:2],
+                    extra_crop_params={
+                        "centroid": truth["centroid"],
+                        "bbox_size": truth["bbox_size"],
+                        "imdims": truth["imdims"],
+                    },
+                    ransac=True,
+                    reduce_mean=False,
+                )
+                errs_pose.append(utils.pose.geodesic_error(r_vec, truth["pose"]))
+                errs_pose_flip.append(
+                    utils.pose.geodesic_error(r_vec, truth["pose"], flip=True)
+                )
+                errs_position.append(
+                    utils.pose.position_error(t_vec, truth["position"])[1]
+                )
+        err_pose = np.degrees(np.mean(errs_pose))
+        err_pose_flip = np.degrees(np.mean(errs_pose_flip))
+        err_position = np.mean(errs_position)
+        print(
+            f"\nREAL IMAGE ERROR: {err_pose:.2f} ({err_pose_flip:.2f} flip) deg, {err_position:.2f} pos"
+        )
+        if self.experiment:
+            with self.experiment.validate():
+                self.experiment.log_metric("real_image_pose_error_deg", err_pose)
+                self.experiment.log_metric(
+                    "real_image_pose_error_flip_deg", err_pose_flip
+                )
+                self.experiment.log_metric("real_image_position_error", err_position)
 
     def on_train_batch_end(self, batch, logs=None):
         self.comet_step += 1
@@ -232,8 +294,13 @@ class KeypointsModel:
         if train:
             dataset = dataset.shuffle(self.hp["shuffle_buffer_size"])
 
-        dataset = dataset.map(lambda example: tf.io.parse_single_example(example, features), num_parallel_calls=16)
-        dataset = dataset.filter(lambda parsed: len(parsed["image/object/bbox/xmin"].values) > 0)
+        dataset = dataset.map(
+            lambda example: tf.io.parse_single_example(example, features),
+            num_parallel_calls=16,
+        )
+        dataset = dataset.filter(
+            lambda parsed: len(parsed["image/object/bbox/xmin"].values) > 0
+        )
         return dataset.map(_parse_function, num_parallel_calls=16)
 
     def train(self, logdir, experiment=None):
@@ -260,22 +327,6 @@ class KeypointsModel:
         #     self.keypoints_3d, self.crop_size, self.hp["pnp_focal_length"], experiment
         # )
         for i, phase in enumerate(self.hp["phases"]):
-            phase_logdir = os.path.join(logdir, f"phase_{i}")
-            model_path = os.path.join(phase_logdir, "model.h5")
-            model_path_latest = os.path.join(phase_logdir, "model-latest.h5")
-            callbacks = [
-                tf.keras.callbacks.TensorBoard(
-                    log_dir=phase_logdir, write_graph=False, profile_batch=0
-                ),
-                tf.keras.callbacks.ModelCheckpoint(
-                    model_path, monitor="val_loss", save_best_only=True, mode="min"
-                ),
-                tf.keras.callbacks.ModelCheckpoint(
-                    model_path_latest, save_best_only=False,
-                ),
-                # pose_error_callback,
-            ]
-
             # if this is the first phase, generate a new model with fresh weights.
             # otherwise, load the model from the previous phase's best checkpoint
             if i == 0:
@@ -294,6 +345,30 @@ class KeypointsModel:
             for layer in model.layers[start_layer_index:]:
                 layer.trainable = True
             print(model.summary())
+
+            phase_logdir = os.path.join(logdir, f"phase_{i}")
+            model_path = os.path.join(phase_logdir, "model.h5")
+            model_path_latest = os.path.join(phase_logdir, "model-latest.h5")
+            pose_error_callback = PoseErrorCallback(
+                model,
+                self.keypoints_3d,
+                self.crop_size,
+                self.hp["pnp_focal_length"],
+                real_image_dir=self.hp.get("real_image_dir"),
+                experiment=experiment,
+            )
+            callbacks = [
+                tf.keras.callbacks.TensorBoard(
+                    log_dir=phase_logdir, write_graph=False, profile_batch=0
+                ),
+                tf.keras.callbacks.ModelCheckpoint(
+                    model_path, monitor="val_loss", save_best_only=True, mode="min"
+                ),
+                tf.keras.callbacks.ModelCheckpoint(
+                    model_path_latest, save_best_only=False,
+                ),
+                pose_error_callback,
+            ]
 
             optimizer = self.OPTIMIZERS[phase["optimizer"]](**phase["optimizer_args"])
             model.compile(
