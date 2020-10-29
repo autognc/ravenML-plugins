@@ -11,7 +11,9 @@ def recursive_map_dict(d, f):
     return f(d)
 
 
-def dataset_from_directory(dir_path, cropsize, nb_keypoints=None):
+def dataset_from_directory(
+    dir_path, cropsize, nb_keypoints=None, focal_length=1422.22222
+):
     """
     Get a Tensorflow dataset that generates samples from a directory with test data
     that is not in TFRecord format (i.e. a directory with image_*.png and meta_*.json files).
@@ -22,6 +24,22 @@ def dataset_from_directory(dir_path, cropsize, nb_keypoints=None):
     Tensor and metadata is a dictionary of Tensors.
     """
 
+    def parse(metadata, img_id):
+        parsed = {
+            "bbox": metadata["bboxes"]["cygnus"],
+            "pose": metadata["pose"],
+            "translation": metadata["translation"],
+            "focal_length": metadata["focal_length"],
+            "image_id": img_id,
+        }
+        if "focal_length" in metadata:
+            parsed["focal_length"] = metadata["focal_length"]
+        else:
+            parsed["focal_length"] = focal_length
+        if "keypoints" in metadata:
+            parsed["keypoints"] = metadata["keypoints"]
+        return recursive_map_dict(parsed, tf.convert_to_tensor)
+
     def generator():
         image_files = sorted(glob.glob(os.path.join(dir_path, "image_*")))
         meta_files = sorted(glob.glob(os.path.join(dir_path, "meta_*.json")))
@@ -29,20 +47,22 @@ def dataset_from_directory(dir_path, cropsize, nb_keypoints=None):
             # load metadata
             with open(meta_file, "r") as f:
                 metadata = json.load(f)
-            metadata = recursive_map_dict(metadata, tf.convert_to_tensor)
-
+            img_id = os.path.basename(image_file).split("_")[1].split(".")[0]
+            if not metadata["bboxes"]:
+                continue
+            metadata = parse(metadata, img_id)
             yield image_file, metadata
 
     meta_file_0 = glob.glob(os.path.join(dir_path, "meta_*.json"))[0]
     with open(meta_file_0, "r") as f:
         meta0 = json.load(f)
-    dtypes = recursive_map_dict(meta0, lambda x: tf.convert_to_tensor(x).dtype)
+    dtypes = recursive_map_dict(parse(meta0, "0"), lambda x: x.dtype)
     dataset = tf.data.Dataset.from_generator(generator, (tf.string, dtypes))
 
     def process(image_file, metadata):
         # load bounding box
         # TODO don't hardcode key, maybe
-        bbox = metadata["bboxes"]["cygnus"]
+        bbox = metadata["bbox"]
         xmin = bbox["xmin"]
         xmax = bbox["xmax"]
         ymin = bbox["ymin"]
@@ -64,7 +84,8 @@ def dataset_from_directory(dir_path, cropsize, nb_keypoints=None):
             "bbox_size": tf.ensure_shape(bbox_size, []),
             "centroid": tf.ensure_shape(centroid, [2]),
             "imdims": imdims,
-            "position": tf.ensure_shape(metadata["position"], [3]),
+            "position": tf.ensure_shape(metadata["translation"], [3]),
+            "image_id": metadata["image_id"],
         }
         if "focal_length" in metadata:
             truth["focal_length"] = tf.ensure_shape(metadata["focal_length"], [])
